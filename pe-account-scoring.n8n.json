@@ -1,0 +1,234 @@
+{
+  "id": "peAccountScoring01",
+  "name": "PE Account Scoring and HubSpot Sync",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "n1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sample data: FICTIONAL firms for demo only. Replace with a real source (CSV, Sheet, Clay table, CRM export).\nconst firms = [\n  { name: 'Northfield Capital Partners', domain: 'northfieldcap.example', aum_usd_bn: 62, strategy: 'Buyout', sector_focus: 'Healthcare, Software', hq_country: 'US', months_since_fundraise: 5, debt_maturity_12m: true },\n  { name: 'Alder Credit Advisors', domain: 'aldercredit.example', aum_usd_bn: 18, strategy: 'Private Credit', sector_focus: 'Industrials', hq_country: 'UK', months_since_fundraise: 9, debt_maturity_12m: true },\n  { name: 'Brightwater Growth', domain: 'brightwatergrowth.example', aum_usd_bn: 7, strategy: 'Growth Equity', sector_focus: 'Fintech, SaaS', hq_country: 'US', months_since_fundraise: 22, debt_maturity_12m: false },\n  { name: 'Kestrel Ventures', domain: 'kestrelvc.example', aum_usd_bn: 1.2, strategy: 'Venture', sector_focus: 'Consumer', hq_country: 'IN', months_since_fundraise: 30, debt_maturity_12m: false },\n  { name: 'Harbor Lane Real Assets', domain: 'harborlane.example', aum_usd_bn: 11, strategy: 'Real Estate', sector_focus: 'Logistics', hq_country: 'SG', months_since_fundraise: 14, debt_maturity_12m: true },\n  { name: 'Meridian Buyout Group', domain: 'meridianbuyout.example', aum_usd_bn: 3.5, strategy: 'Buyout', sector_focus: 'Business Services', hq_country: 'DE', months_since_fundraise: 11, debt_maturity_12m: false },\n  { name: 'Quill Street Capital', domain: 'quillstreet.example', aum_usd_bn: 0.6, strategy: 'Growth Equity', sector_focus: 'Media', hq_country: 'BR', months_since_fundraise: 40, debt_maturity_12m: false },\n  { name: 'Summit Ridge Credit', domain: 'summitridge.example', aum_usd_bn: 29, strategy: 'Private Credit', sector_focus: 'Software, Healthcare', hq_country: 'US', months_since_fundraise: 3, debt_maturity_12m: false },\n];\nreturn firms.map(f => ({ json: f }));\n"
+      },
+      "id": "n2",
+      "name": "Load Sample Firms",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ICP scoring and segmentation. All weights are ASSUMPTIONS: tune them against your own closed-won data.\nconst CFG = {\n  sizeTiers: [ { min: 50, pts: 30, band: 'Mega (50bn+)' }, { min: 10, pts: 22, band: 'Large (10-50bn)' }, { min: 2, pts: 14, band: 'Mid (2-10bn)' }, { min: 0, pts: 6, band: 'Small (<2bn)' } ],\n  strategyPts: { 'Buyout': 25, 'Private Credit': 25, 'Growth Equity': 18, 'Real Estate': 12, 'Venture': 8 },\n  geoPts: { US: 15, UK: 12, DE: 10, SG: 8 }, geoDefault: 4,\n  fundraiseWithinMonths: 12, fundraisePts: 20, debtMaturityPts: 10,\n  tierA: 70, tierB: 40,\n};\nconst PLAYS = {\n  'Buyout': { committee: ['Deal team (VP / Principal)', 'CFO / Finance', 'Portfolio Operations'], angle: 'Track every financing workflow across live deals in one place' },\n  'Private Credit': { committee: ['Origination', 'Portfolio Monitoring', 'Credit Committee support'], angle: 'Lender-side visibility into pipeline, maturities and borrower activity' },\n  'Growth Equity': { committee: ['Investment team', 'Finance / Fund Ops'], angle: 'Standardize deal and financing workflow as deal volume scales' },\n  'Real Estate': { committee: ['Acquisitions', 'Asset Management', 'Finance'], angle: 'Coordinate financing across multiple assets and lenders' },\n  'Venture': { committee: ['Partners', 'Fund Ops'], angle: 'Light-weight workflow tracking for follow-on and bridge financing' },\n};\nreturn $input.all().map(({ json: f }) => {\n  const size = CFG.sizeTiers.find(t => f.aum_usd_bn >= t.min);\n  const sizePts = size.pts;\n  const stratPts = CFG.strategyPts[f.strategy] ?? 5;\n  const geoPts = CFG.geoPts[f.hq_country] ?? CFG.geoDefault;\n  const fundraiseSignal = f.months_since_fundraise <= CFG.fundraiseWithinMonths;\n  const signalPts = (fundraiseSignal ? CFG.fundraisePts : 0) + (f.debt_maturity_12m ? CFG.debtMaturityPts : 0);\n  const score = Math.min(100, sizePts + stratPts + geoPts + signalPts);\n  const tier = score >= CFG.tierA ? 'A' : score >= CFG.tierB ? 'B' : 'C';\n  const play = PLAYS[f.strategy] || { committee: ['Investment team'], angle: 'Standardize financing workflow' };\n  const signals = [fundraiseSignal ? 'recent fundraise' : null, f.debt_maturity_12m ? 'debt maturity within 12 months' : null].filter(Boolean);\n  return { json: { ...f, size_band: size.band, icp_score: score, icp_tier: tier,\n    score_breakdown: `size ${sizePts} + strategy ${stratPts} + geo ${geoPts} + signals ${signalPts}`,\n    signals: signals.join('; ') || 'none', buying_committee: play.committee.join(' | '), outreach_angle: play.angle } };\n});\n"
+      },
+      "id": "n3",
+      "name": "Score and Segment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.icp_tier }}",
+              "rightValue": "A",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n4",
+      "name": "Tier A?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: \"claude-sonnet-5-5\", max_tokens: 120, messages: [{ role: \"user\", content: \"Write one first-line sentence for a cold email to the deal team at \" + $json.name + \", a \" + $json.strategy + \" firm focused on \" + $json.sector_focus + \". Angle: \" + $json.outreach_angle + \". Signals: \" + $json.signals + \". No flattery, no claims about their business that are not in this prompt.\" }] }) }}",
+        "options": {}
+      },
+      "id": "n5",
+      "name": "Draft First Line (LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        100
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build the HubSpot CRM v3 company payload. Custom properties (icp_score etc.) must exist in HubSpot first (see README).\nreturn $input.all().map(({ json: f }) => ({ json: { ...f, hubspot_body: { properties: {\n  name: f.name, domain: f.domain,\n  icp_score: String(f.icp_score), icp_tier: f.icp_tier, size_band: f.size_band,\n  strategy: f.strategy, outreach_angle: f.outreach_angle, buying_committee: f.buying_committee, signals: f.signals,\n} } } }));\n"
+      },
+      "id": "n6",
+      "name": "Build HubSpot Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/companies",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.hubspot_body) }}",
+        "options": {}
+      },
+      "id": "n7",
+      "name": "Create Company in HubSpot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        100
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {},
+      "id": "n8",
+      "name": "Nurture List (Tier B and C)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        880,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Load Sample Firms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Sample Firms": {
+      "main": [
+        [
+          {
+            "node": "Score and Segment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score and Segment": {
+      "main": [
+        [
+          {
+            "node": "Tier A?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tier A?": {
+      "main": [
+        [
+          {
+            "node": "Draft First Line (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nurture List (Tier B and C)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft First Line (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Build HubSpot Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build HubSpot Payload": {
+      "main": [
+        [
+          {
+            "node": "Create Company in HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
